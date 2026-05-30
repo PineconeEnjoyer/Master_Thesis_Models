@@ -1,5 +1,4 @@
 import os
-
 import numpy as np
 import pandas as pd
 import torch
@@ -10,31 +9,7 @@ from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import Dataset, DataLoader
 
 
-# PODZIAŁ DANYCH (ZAPOBIEGANIE WYCIEKOM)
-
-def create_stratified_group_splits(metadata_path, test_size=0.15, val_size=0.15):
-    df = pd.read_csv(metadata_path)
-
-    lesion_df = df.groupby('lesion_id')['dx'].first().reset_index()
-    temp_size = test_size + val_size
-
-    train_lesions, temp_lesions = train_test_split(
-        lesion_df, test_size=temp_size, stratify=lesion_df['dx'], random_state=42
-    )
-
-    val_ratio = val_size / temp_size
-    val_lesions, test_lesions = train_test_split(
-        temp_lesions, test_size=(1.0 - val_ratio), stratify=temp_lesions['dx'], random_state=42
-    )
-
-    train_df = df[df['lesion_id'].isin(train_lesions['lesion_id'])].reset_index(drop=True)
-    val_df = df[df['lesion_id'].isin(val_lesions['lesion_id'])].reset_index(drop=True)
-    test_df = df[df['lesion_id'].isin(test_lesions['lesion_id'])].reset_index(drop=True)
-
-    return train_df, val_df, test_df
-
-
-# TRANSFORMACJE (TYLKO AUGMENTACJA I NORMALIZACJA)
+# USTAWIENIA I TRANSFORMACJE
 
 IMG_SIZE = 224
 
@@ -91,37 +66,88 @@ class SkinLesionDataset(Dataset):
         return image, label
 
 
-# GŁÓWNY BLOK (URUCHOMIENIE)
+# LOGIKA PODZIAŁU DANYCH (BEZ WYCIEKÓW)
+
+def create_stratified_group_splits(metadata_path, test_size=0.15, val_size=0.15):
+    df = pd.read_csv(metadata_path)
+
+    # Sprawdzenie brakujących kolumn
+    required_columns = {'lesion_id', 'dx'}
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise ValueError(f"Brakuje wymaganych kolumn w pliku CSV: {sorted(missing_columns)}")
+
+    # Stratyfikowany podział po lesion_id, aby uniknąć wycieku danych
+    lesion_df = df.groupby('lesion_id')['dx'].first().reset_index()
+    temp_size = test_size + val_size
+
+    train_lesions, temp_lesions = train_test_split(
+        lesion_df, test_size=temp_size, stratify=lesion_df['dx'], random_state=42
+    )
+
+    val_ratio = val_size / temp_size
+    val_lesions, test_lesions = train_test_split(
+        temp_lesions, test_size=(1.0 - val_ratio), stratify=temp_lesions['dx'], random_state=42
+    )
+
+    train_df = df[df['lesion_id'].isin(train_lesions['lesion_id'])].reset_index(drop=True)
+    val_df = df[df['lesion_id'].isin(val_lesions['lesion_id'])].reset_index(drop=True)
+    test_df = df[df['lesion_id'].isin(test_lesions['lesion_id'])].reset_index(drop=True)
+
+    return train_df, val_df, test_df
+
+
+# FUNKCJA ZWRACAJĄCA DANE (DO EKSPORTU)
+
+def get_dataloaders_and_weights(metadata_path, image_dir, batch_size=32, num_workers=2):
+    """
+    Główna funkcja wywoływana w skryptach trenujących.
+    Zwraca DataLoadery, wagi klas oraz listę klas.
+    """
+    print("Wczytywanie i podział metadanych...")
+    train_df, val_df, test_df = create_stratified_group_splits(metadata_path, test_size=0.15, val_size=0.15)
+
+    # Wyliczanie klas i wag klas na podstawie ZBIORU TRENINGOWEGO
+    classes = np.array(sorted(train_df['dx'].unique()))
+    y_train = train_df['dx'].values
+
+    weights = compute_class_weight(
+        class_weight='balanced',
+        classes=classes,
+        y=y_train
+    )
+    class_weights = torch.tensor(weights, dtype=torch.float)
+
+    # Inicjalizacja Datasetów
+    print("Inicjalizacja zbiorów danych...")
+    train_dataset = SkinLesionDataset(train_df, image_dir, transform=train_transforms, classes=classes)
+    val_dataset = SkinLesionDataset(val_df, image_dir, transform=val_test_transforms, classes=classes)
+    test_dataset = SkinLesionDataset(test_df, image_dir, transform=val_test_transforms, classes=classes)
+
+    # Inicjalizacja DataLoaderów
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    print(f"Gotowe! Załadowano {len(train_dataset)} próbek treningowych, "
+          f"{len(val_dataset)} walidacyjnych, {len(test_dataset)} testowych.")
+
+    return train_loader, val_loader, test_loader, class_weights, classes
+
+
+# GŁÓWNY BLOK (TESTOWY)
 
 if __name__ == "__main__":
-    METADATA_PATH = 'HAM10000_metadata.csv'
-    CLEAN_IMAGE_DIR = 'HAM10000_images_clean'
+    METADATA_PATH = r'HAM10000\HAM10000_metadata.csv'
+    CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_clean'
 
     try:
-        train_df, val_df, test_df = create_stratified_group_splits(METADATA_PATH)
-
-        classes = np.array(sorted(train_df['dx'].unique()))
-        y_train = train_df['dx'].values
-
-        weights = compute_class_weight(
-            class_weight='balanced',
-            classes=classes,
-            y=y_train
+        # Testowe uruchomienie funkcji
+        t_loader, v_loader, test_loader, weights, cls_names = get_dataloaders_and_weights(
+            METADATA_PATH, CLEAN_IMAGE_DIR, batch_size=32
         )
-        class_weights = torch.tensor(weights, dtype=torch.float)
+        print(f"Wagi klas: {weights.tolist()}")
+        print(f"Kolejność klas: {cls_names.tolist()}")
 
-        train_dataset = SkinLesionDataset(train_df, CLEAN_IMAGE_DIR, transform=train_transforms, classes=classes)
-        val_dataset = SkinLesionDataset(val_df, CLEAN_IMAGE_DIR, transform=val_test_transforms, classes=classes)
-        test_dataset = SkinLesionDataset(test_df, CLEAN_IMAGE_DIR, transform=val_test_transforms, classes=classes)
-
-        BATCH_SIZE = 32
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
-
-        print(
-            f"Gotowe! Załadowano {len(train_dataset)} próbek treningowych, {len(val_dataset)} walidacyjnych, {len(test_dataset)} testowych."
-        )
-
-    except FileNotFoundError as e:
+    except Exception as e:
         print(f"Błąd: {e}")
