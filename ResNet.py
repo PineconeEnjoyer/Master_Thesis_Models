@@ -12,7 +12,7 @@ from torchvision import models
 from Preprocessing import get_dataloaders_and_weights
 
 
-# FUNKCJA STRATY - FOCAL LOSS (NOWOŚĆ)
+# FUNKCJA STRATY - FOCAL LOSS
 class FocalLoss(nn.Module):
 
     def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
@@ -42,7 +42,7 @@ class FocalLoss(nn.Module):
 # ARCHITEKTURA (ZAMRAŻANIE WARSTW)
 def get_resnet_model(num_classes=7):
     print("Pobieranie pre-trenowanego modelu ResNet50...")
-    model = models.resnet50(weights='DEFAULT')
+    model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
 
     # Zamrażamy wszystkie warstwy w sieci
     for param in model.parameters():
@@ -54,9 +54,13 @@ def get_resnet_model(num_classes=7):
     for param in model.layer4.parameters():
         param.requires_grad = True
 
-    # Podmiana klasyfikatora (nowa warstwa jest domyślnie odmrożona)
+    # Podmiana klasyfikatora z dodaną silną regulacją
     num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, num_classes)
+    #model.fc = nn.Linear(num_ftrs, num_classes)
+    model.fc = nn.Sequential(
+        nn.Dropout(0.5),
+        nn.Linear(num_ftrs, num_classes)
+    )
 
     return model
 
@@ -142,7 +146,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
 
 # FUNKCJE WIZUALIZACJI I EWALUACJI
-def plot_training_history(history, save_dir):
+def plot_training_history(history, model_dir):
     epochs = range(1, len(history['train_loss']) + 1)
     plt.figure(figsize=(12, 5))
 
@@ -165,13 +169,13 @@ def plot_training_history(history, save_dir):
     plt.grid(True)
 
     plt.tight_layout()
-    chart_path = os.path.join(save_dir, 'ResNet_Acc.png')
+    chart_path = os.path.join(model_dir, 'ResNet_Acc.png')
     plt.savefig(chart_path)
     plt.close()
     print(f"-> Zapisano wykres historii uczenia: {chart_path}")
 
 
-def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
+def evaluate_and_save_model(model, test_loader, device, classes, model_dir):
     print("\nTrwa ewaluacja modelu na zbiorze testowym...")
     model.eval()
     all_preds = []
@@ -190,7 +194,7 @@ def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
     print("\n--- RAPORT KLASYFIKACJI ---")
     print(report)
 
-    report_path = os.path.join(save_dir, 'ResNet_report.txt')
+    report_path = os.path.join(model_dir, 'ResNet_report.txt')
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write("--- Classification Report (ResNet) ---\n")
         f.write(report)
@@ -205,7 +209,7 @@ def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
     plt.ylabel('Actual Classification')
     plt.tight_layout()
 
-    cm_path = os.path.join(save_dir, 'ResNet_CM.png')
+    cm_path = os.path.join(model_dir, 'ResNet_CM.png')
     plt.savefig(cm_path)
     plt.close()
     print(f"-> Zapisano macierz pomyłek: {cm_path}")
@@ -213,9 +217,11 @@ def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
 
 # GŁÓWNY PROCES URUCHOMIENIA
 if __name__ == "__main__":
+    #GROUND_TRUTH_PATH = r'ISIC2019\Training\ISIC_2019_Training_GroundTruth.csv'
     METADATA_PATH = r'HAM10000\HAM10000_metadata.csv'
-    CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_clean'
-    MODEL_DIR = r'Models\ResNet'
+    CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_mask'
+    MASK_DIR = r'HAM10000\HAM10000_segmentations_lesion_tschandl'
+    MODEL_DIR = r'Models\ResNet\HAM10000_ResNet'
 
     os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -224,8 +230,10 @@ if __name__ == "__main__":
     print("\nTrwa przygotowywanie danych...")
 
     train_loader, val_loader, test_loader, class_weights, classes = get_dataloaders_and_weights(
+        #ground_truth_path=GROUND_TRUTH_PATH,
         metadata_path=METADATA_PATH,
         image_dir=CLEAN_IMAGE_DIR,
+        mask_dir=MASK_DIR,
         batch_size=32,
         num_workers=2
     )
@@ -235,13 +243,12 @@ if __name__ == "__main__":
 
     model = get_resnet_model(num_classes=num_classes).to(device)
 
-    # Wyłączamy ręczne wagi, zostawiamy tylko sam Focal Loss
-    criterion = FocalLoss(alpha=None, gamma=2.0)
+    criterion = FocalLoss(alpha=class_weights, gamma=2.0).to(device)
 
     # NOWOŚĆ: Przekazujemy do optymalizatora tylko odmrożone parametry (aby oszczędzić VRAM i uniknąć błędów)
     optimizer = optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=0.0001,
+        lr=5e-5,
         weight_decay=1e-4
     )
 

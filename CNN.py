@@ -16,26 +16,41 @@ class ClassicSkinCNN(nn.Module):
         super(ClassicSkinCNN, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
 
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
 
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
+            nn.Dropout2d(0.1),
 
-            nn.AdaptiveAvgPool2d((7, 7))
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout2d(0.2),
+
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1))
         )
 
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 7 * 7, 512),
-            nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(512, num_classes)
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(256, num_classes)
         )
 
     def forward(self, x):
@@ -132,7 +147,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
 
 # FUNKCJE WIZUALIZACJI I EWALUACJI
-def plot_training_history(history):
+def plot_training_history(history, model_dir):
     epochs = range(1, len(history['train_loss']) + 1)
 
     plt.figure(figsize=(12, 5))
@@ -156,13 +171,14 @@ def plot_training_history(history):
     plt.grid(True)
 
     plt.tight_layout()
-    plt.savefig(r'Models\CNN\CNN_Acc.png')
+    chart_path = os.path.join(model_dir, 'CNN_Acc.png')
+    plt.savefig(chart_path)
     plt.close()
 
     print("-> Zapisano wykres historii uczenia jako 'CNN_Acc.png'")
 
 
-def evaluate_model(model, test_loader, device, classes):
+def evaluate_model(model, test_loader, device, classes, model_dir):
     print("\nTrwa ewaluacja modelu na zbiorze testowym...")
 
     model.eval()
@@ -185,7 +201,7 @@ def evaluate_model(model, test_loader, device, classes):
     print("\n--- RAPORT KLASYFIKACJI ---")
     print(report)
 
-    report_path = os.path.join(r'Models\CNN\CNN_report.txt')
+    report_path = os.path.join(model_dir, r'CNN_report.txt')
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write("--- Classification Report (CNN) ---\n")
         f.write(report)
@@ -207,17 +223,20 @@ def evaluate_model(model, test_loader, device, classes):
     plt.xlabel('Predicted Classification')
     plt.ylabel('Actual Classification')
     plt.tight_layout()
-    plt.savefig(r'Models\CNN\CNN_CM.png')
-    plt.close()
 
-    print("-> Zapisano macierz pomyłek jako 'CNN_CM.png'")
+    cm_path = os.path.join(model_dir, 'CNN_CM.png')
+    plt.savefig(cm_path)
+    plt.close()
+    print(f"-> Zapisano macierz pomyłek: {cm_path}")
 
 
 # GŁÓWNY PROCES URUCHOMIENIA
 if __name__ == "__main__":
+    #GROUND_TRUTH_PATH = r'ISIC2019\Training\ISIC_2019_Training_GroundTruth.csv'
     METADATA_PATH = r'HAM10000\HAM10000_metadata.csv'
-    CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_clean'
-    MODEL_DIR = r'Models\CNN'
+    CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_mask'
+    MASK_DIR = r'HAM10000\HAM10000_segmentations_lesion_tschandl'
+    MODEL_DIR = r'Models\CNN\HAM10000_CNN'
 
     os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -227,8 +246,10 @@ if __name__ == "__main__":
     print("\nTrwa przygotowywanie danych...")
 
     train_loader, val_loader, test_loader, class_weights, classes = get_dataloaders_and_weights(
+        #ground_truth_path=GROUND_TRUTH_PATH,
         metadata_path=METADATA_PATH,
         image_dir=CLEAN_IMAGE_DIR,
+        mask_dir=MASK_DIR,
         batch_size=32,
         num_workers=2
     )
@@ -238,7 +259,7 @@ if __name__ == "__main__":
 
     model = ClassicSkinCNN(num_classes=num_classes).to(device)
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss()
 
     # Optymalizator z regularyzacją L2
     optimizer = optim.Adam(
@@ -277,8 +298,8 @@ if __name__ == "__main__":
     print(f"\n-> Zapisano surowe dane uczenia do: {history_path}")
 
     # Rysowanie wykresów i ewaluacja z zapisem do txt
-    plot_training_history(training_history)
-    evaluate_model(trained_model, test_loader, device, classes)
+    plot_training_history(training_history, MODEL_DIR)
+    evaluate_model(trained_model, test_loader, device, classes, MODEL_DIR)
 
     # Zapis modelu
     MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'CNN_model.pth')
