@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 
 # Ustawienia i transformacje augmentacyjne do zwiększenia różorodości danych
-IMG_SIZE = 224
+IMG_SIZE = 300
 
 train_transforms = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
