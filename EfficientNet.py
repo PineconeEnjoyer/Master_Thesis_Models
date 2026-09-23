@@ -9,10 +9,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
 from torchvision import models
-from Preprocessing import get_dataloaders_and_weights
+from Preprocessing import get_dataloaders_and_weights, set_seed
 
+set_seed(42)
 
-# FUNKCJA STRATY - FOCAL LOSS
+# Focal Loss, wasn't used at the end
 class FocalLoss(nn.Module):
     def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
         super(FocalLoss, self).__init__()
@@ -21,9 +22,14 @@ class FocalLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
         pt = torch.exp(-ce_loss)
+
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.alpha is not None:
+            alpha_t = self.alpha[targets]
+            focal_loss = alpha_t * focal_loss
 
         if self.reduction == 'mean':
             return focal_loss.mean()
@@ -33,19 +39,16 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 
-# ARCHITEKTURA (EFFICIENTNET ZAMRAŻANIE)
 def get_efficientnet_model(num_classes=7):
-    print("Pobieranie pre-trenowanego modelu EfficientNet-B3...")
+    print("Downloading pre-trained model EfficientNet-B3...")
     model = models.efficientnet_b3(weights='DEFAULT')
 
-    # Odmrażamy dwa ostatnie bloki
     for param in model.features[7].parameters():
         param.requires_grad = True
 
     for param in model.features[8].parameters():
         param.requires_grad = True
 
-    # EfficientNet używa classifier[1] dla ostatecznej klasyfikacji
     num_ftrs = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(0.5),
@@ -55,11 +58,12 @@ def get_efficientnet_model(num_classes=7):
     return model
 
 
-# FUNKCJA TRENINGOWA
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=100, patience=10):
     best_model_wts = copy.deepcopy(model.state_dict())
     best_val_loss = float('inf')
     epochs_no_improve = 0
+
+    scaler = torch.amp.GradScaler('cuda')
 
     history = {
         'train_loss': [],
@@ -70,7 +74,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
     for epoch in range(num_epochs):
         current_lr = optimizer.param_groups[0]["lr"]
-        print(f'Epoka {epoch + 1}/{num_epochs} | LR: {current_lr:.6f}')
+        print(f'Epoch {epoch + 1}/{num_epochs} | LR: {current_lr:.6f}')
 
         val_epoch_loss = 0.0
 
@@ -86,13 +90,17 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
                 optimizer.zero_grad()
 
                 with torch.set_grad_enabled(phase == 'train'):
-                    outputs = model(inputs)
-                    _, preds = torch.max(outputs, 1)
-                    loss = criterion(outputs, labels)
+                    with torch.amp.autocast('cuda'):
+                        outputs = model(inputs)
+                        _, preds = torch.max(outputs, 1)
+                        loss = criterion(outputs, labels)
 
                     if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+                        #loss.backward()
+                        #optimizer.step()
 
                 running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data)
@@ -115,7 +123,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         new_lr = optimizer.param_groups[0]["lr"]
 
         if new_lr < old_lr:
-            print(f'-> Learning rate zmniejszony: {old_lr:.6f} -> {new_lr:.6f}')
+            print(f'-> Learning rate decreased: {old_lr:.6f} -> {new_lr:.6f}')
 
         if val_epoch_loss < best_val_loss:
             best_val_loss = val_epoch_loss
@@ -123,14 +131,14 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
-            print(f'-> Brak poprawy od {epochs_no_improve} epok.')
+            print(f'-> No improvement for {epochs_no_improve} epoch(s).')
 
         if epochs_no_improve >= patience:
-            print(f'\n[!] Wczesne zatrzymanie w epoce {epoch + 1}!')
+            print(f'\nEarly stopping at epoch {epoch + 1}!')
             break
         print('-' * 30)
 
-    print(f'Najlepszy wynik Validation Loss: {best_val_loss:.4f}')
+    print(f'Best Validation Loss achieved: {best_val_loss:.4f}')
     model.load_state_dict(best_model_wts)
     return model, history
 
@@ -162,11 +170,11 @@ def plot_training_history(history, save_dir):
     chart_path = os.path.join(save_dir, 'EfficientNet_Acc.png')
     plt.savefig(chart_path)
     plt.close()
-    print(f"-> Zapisano wykres historii uczenia: {chart_path}")
+    print(f"-> Saved training history plot as {chart_path}")
 
 
 def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
-    print("\nTrwa ewaluacja modelu na zbiorze testowym...")
+    print("\nEvaluating the model on the test set...")
     model.eval()
     all_preds = []
     all_labels = []
@@ -179,18 +187,18 @@ def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-    # Generowanie i zapisywanie raportu klasyfikacji
+    # Classification report
     report = classification_report(all_labels, all_preds, target_names=classes, zero_division=0)
-    print("\n--- RAPORT KLASYFIKACJI ---")
+    print("\n   CLASSIFICATION REPORT     ")
     print(report)
 
     report_path = os.path.join(save_dir, 'EfficientNet_report.txt')
     with open(report_path, 'w', encoding='utf-8') as f:
-        f.write("--- Classification Report (EfficientNet) ---\n")
+        f.write("   Classification Report (EfficientNet)   \n")
         f.write(report)
-    print(f"-> Zapisano raport klasyfikacji: {report_path}")
+    print(f"-> Saved classification report: {report_path}")
 
-    # Generowanie i zapisywanie macierzy pomyłek
+    # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
@@ -202,28 +210,29 @@ def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
     cm_path = os.path.join(save_dir, 'EfficientNet_CM.png')
     plt.savefig(cm_path)
     plt.close()
-    print(f"-> Zapisano macierz pomyłek: {cm_path}")
+    print(f"-> Saved confusion matrix: {cm_path}")
 
 
 # GŁÓWNY PROCES URUCHOMIENIA
 if __name__ == "__main__":
     METADATA_PATH = r'HAM10000\HAM10000_metadata.csv'
     CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_mask'
-    MASK_DIR = r'HAM10000\HAM10000_segmentations_lesion_tschandl'
-    MODEL_DIR = r'Models\EfficientNet\HAN10000_EfficientNet'
+    #MASK_DIR = r'HAM10000\HAM10000_segmentations_lesion_tschandl'
+    MODEL_DIR = r'Models\EfficientNet\Final'
 
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Uruchomiono na urządzeniu: {device}")
-    print("\nTrwa przygotowywanie danych...")
+    print(f"Running on device: {device}")
+    print("\nPreparing data...")
 
     train_loader, val_loader, test_loader, class_weights, classes = get_dataloaders_and_weights(
         metadata_path=METADATA_PATH,
         image_dir=CLEAN_IMAGE_DIR,
-        mask_dir=MASK_DIR,
-        batch_size=16,
-        num_workers=2
+        #mask_dir=MASK_DIR,
+        img_size=260,
+        seg_mode='none',
+        use_sampler=True
     )
 
     class_weights = class_weights.to(device)
@@ -232,17 +241,18 @@ if __name__ == "__main__":
     model = get_efficientnet_model(num_classes=num_classes).to(device)
 
     #criterion = FocalLoss(alpha=None, gamma=2.0)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    #criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss()
 
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=0.0001,
+        lr=0.00001,
         weight_decay=1e-4
     )
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=4)
 
-    print("\nStart treningu...")
+    print("\nStarting training...")
     trained_model, training_history = train_model(
         model=model,
         train_loader=train_loader,
@@ -251,7 +261,7 @@ if __name__ == "__main__":
         optimizer=optimizer,
         scheduler=scheduler,
         device=device,
-        num_epochs=100,
+        num_epochs=1000,
         patience=10
     )
 
@@ -259,7 +269,7 @@ if __name__ == "__main__":
     history_path = os.path.join(MODEL_DIR, 'EfficientNet_report.json')
     with open(history_path, 'w', encoding='utf-8') as f:
         json.dump(training_history, f, indent=4)
-    print(f"\n-> Zapisano surowe dane uczenia do: {history_path}")
+    print(f"\n-> Saved raw training data to: {history_path}")
 
     # Rysowanie wykresów i ewaluacja z zapisem do txt
     plot_training_history(training_history, MODEL_DIR)
@@ -268,4 +278,4 @@ if __name__ == "__main__":
     # Zapis modelu
     MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'EfficientNet_model.pth')
     torch.save(trained_model.state_dict(), MODEL_SAVE_PATH)
-    print(f"\nSukces! Najlepszy model został zapisany pod nazwą: {MODEL_SAVE_PATH}")
+    print(f"\nBest model saved as: {MODEL_SAVE_PATH}")

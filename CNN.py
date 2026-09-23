@@ -7,10 +7,10 @@ import copy
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
-from Preprocessing import get_dataloaders_and_weights
+from Preprocessing import get_dataloaders_and_weights, set_seed
 
+set_seed(42)
 
-# ARCHITEKTURA SIECI CNN
 class ClassicSkinCNN(nn.Module):
     def __init__(self, num_classes=7):
         super(ClassicSkinCNN, self).__init__()
@@ -57,7 +57,6 @@ class ClassicSkinCNN(nn.Module):
         return self.classifier(self.features(x))
 
 
-# FUNKCJA TRENINGOWA
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, device, num_epochs=100, patience=10):
     best_model_wts = copy.deepcopy(model.state_dict())
     best_val_loss = float('inf')
@@ -72,7 +71,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
     for epoch in range(num_epochs):
         current_lr = optimizer.param_groups[0]["lr"]
-        print(f'Epoka {epoch + 1}/{num_epochs} | LR: {current_lr:.6f}')
+        print(f'Epoch {epoch + 1}/{num_epochs} | LR: {current_lr:.6f}')
 
         val_epoch_loss = 0.0
 
@@ -118,35 +117,32 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
                 history['val_acc'].append(epoch_acc)
                 print(f'Val   Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
 
-        # Scheduler: zmniejsza LR, jeśli val_loss przestaje się poprawiać
         old_lr = optimizer.param_groups[0]["lr"]
         scheduler.step(val_epoch_loss)
         new_lr = optimizer.param_groups[0]["lr"]
 
         if new_lr < old_lr:
-            print(f'-> Learning rate zmniejszony: {old_lr:.6f} -> {new_lr:.6f}')
+            print(f'-> Learning rate decreased: {old_lr:.6f} -> {new_lr:.6f}')
 
-        # Early Stopping i Model Checkpointing
         if val_epoch_loss < best_val_loss:
             best_val_loss = val_epoch_loss
             best_model_wts = copy.deepcopy(model.state_dict())
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
-            print(f'-> Brak poprawy od {epochs_no_improve} epok.')
+            print(f'-> No improvement for {epochs_no_improve} epoch(s).')
 
         if epochs_no_improve >= patience:
-            print(f'\n[!] Wczesne zatrzymanie w epoce {epoch + 1}!')
+            print(f'\nEarly stopping at epoch {epoch + 1}!')
             break
 
         print('-' * 30)
 
-    print(f'Najlepszy wynik Validation Loss: {best_val_loss:.4f}')
+    print(f'Best Validation Loss achieved: {best_val_loss:.4f}')
     model.load_state_dict(best_model_wts)
     return model, history
 
 
-# FUNKCJE WIZUALIZACJI I EWALUACJI
 def plot_training_history(history, model_dir):
     epochs = range(1, len(history['train_loss']) + 1)
 
@@ -175,11 +171,11 @@ def plot_training_history(history, model_dir):
     plt.savefig(chart_path)
     plt.close()
 
-    print("-> Zapisano wykres historii uczenia jako 'CNN_Acc.png'")
+    print("-> Saved training history plot as 'CNN_Acc.png'")
 
 
 def evaluate_model(model, test_loader, device, classes, model_dir):
-    print("\nTrwa ewaluacja modelu na zbiorze testowym...")
+    print("\nEvaluating the model on the test set...")
 
     model.eval()
     all_preds = []
@@ -196,18 +192,18 @@ def evaluate_model(model, test_loader, device, classes, model_dir):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-    # Generowanie i zapisywanie raportu klasyfikacji
+    # Classification report
     report = classification_report(all_labels, all_preds, target_names=classes, zero_division=0)
-    print("\n--- RAPORT KLASYFIKACJI ---")
+    print("\n   CLASSIFICATION REPORT     ")
     print(report)
 
     report_path = os.path.join(model_dir, r'CNN_report.txt')
     with open(report_path, 'w', encoding='utf-8') as f:
-        f.write("--- Classification Report (CNN) ---\n")
+        f.write("   Classification Report (CNN)       \n")
         f.write(report)
-    print(f"-> Zapisano raport klasyfikacji: {report_path}")
+    print(f"-> Saved classification report: {report_path}")
 
-    # Generowanie i zapisywanie macierzy pomyłek
+    # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
 
     plt.figure(figsize=(8, 6))
@@ -227,31 +223,29 @@ def evaluate_model(model, test_loader, device, classes, model_dir):
     cm_path = os.path.join(model_dir, 'CNN_CM.png')
     plt.savefig(cm_path)
     plt.close()
-    print(f"-> Zapisano macierz pomyłek: {cm_path}")
+    print(f"-> Saved confusion matrix: {cm_path}")
 
 
-# GŁÓWNY PROCES URUCHOMIENIA
 if __name__ == "__main__":
     #GROUND_TRUTH_PATH = r'ISIC2019\Training\ISIC_2019_Training_GroundTruth.csv'
     METADATA_PATH = r'HAM10000\HAM10000_metadata.csv'
     CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_mask'
-    MASK_DIR = r'HAM10000\HAM10000_segmentations_lesion_tschandl'
-    MODEL_DIR = r'Models\CNN\HAM10000_CNN'
+    #MASK_DIR = r'HAM10000\HAM10000_segmentations_lesion_tschandl'
+    MODEL_DIR = r'Models\CNN\Final_None_Weight'
 
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Uruchomiono na urządzeniu: {device}")
-
-    print("\nTrwa przygotowywanie danych...")
+    print(f"Running on device: {device}")
+    print("\nPreparing data...")
 
     train_loader, val_loader, test_loader, class_weights, classes = get_dataloaders_and_weights(
-        #ground_truth_path=GROUND_TRUTH_PATH,
         metadata_path=METADATA_PATH,
         image_dir=CLEAN_IMAGE_DIR,
-        mask_dir=MASK_DIR,
-        batch_size=32,
-        num_workers=2
+        #mask_dir=MASK_DIR,
+        img_size=224,
+        seg_mode='none',
+        use_sampler=False
     )
 
     class_weights = class_weights.to(device)
@@ -259,17 +253,15 @@ if __name__ == "__main__":
 
     model = ClassicSkinCNN(num_classes=num_classes).to(device)
 
+    #criterion = nn.CrossEntropyLoss(weight=class_weights)
     criterion = nn.CrossEntropyLoss()
 
-    # Optymalizator z regularyzacją L2
     optimizer = optim.Adam(
         model.parameters(),
         lr=0.0001,
         weight_decay=1e-4
     )
 
-    # Poprawka:
-    # Usunięto verbose=True, ponieważ Twoja wersja PyTorch go nie obsługuje.
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
@@ -277,7 +269,7 @@ if __name__ == "__main__":
         patience=4
     )
 
-    print("\nStart treningu...")
+    print("\nStarting training...")
 
     trained_model, training_history = train_model(
         model=model,
@@ -291,17 +283,14 @@ if __name__ == "__main__":
         patience=10
     )
 
-    # Zapis historii do JSON
     history_path = os.path.join(MODEL_DIR, 'CNN_report.json')
     with open(history_path, 'w', encoding='utf-8') as f:
         json.dump(training_history, f, indent=4)
-    print(f"\n-> Zapisano surowe dane uczenia do: {history_path}")
+    print(f"\n-> Saved raw training data to: {history_path}")
 
-    # Rysowanie wykresów i ewaluacja z zapisem do txt
     plot_training_history(training_history, MODEL_DIR)
     evaluate_model(trained_model, test_loader, device, classes, MODEL_DIR)
 
-    # Zapis modelu
     MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'CNN_model.pth')
     torch.save(trained_model.state_dict(), MODEL_SAVE_PATH)
-    print(f"\nSukces! Najlepszy model został zapisany pod nazwą: {MODEL_SAVE_PATH}")
+    print(f"\nBest model saved as: {MODEL_SAVE_PATH}")

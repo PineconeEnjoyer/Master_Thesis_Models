@@ -39,15 +39,15 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 
-def get_resnet_model(num_classes=7):
-    print("Downloading pre-trained model ResNet50...")
-    model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+def get_vit_model(num_classes=7):
+    print("Downloading pre-trained model Vision Transformer (ViT-B/16)...")
+    model = models.vit_b_16(weights='DEFAULT')
 
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Sequential(
-        nn.Dropout(0.5),
-        nn.Linear(num_ftrs, num_classes)
-    )
+    for param in model.parameters():
+        param.requires_grad = True
+
+    num_ftrs = model.heads.head.in_features
+    model.heads.head = nn.Linear(num_ftrs, num_classes)
 
     return model
 
@@ -122,7 +122,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             print(f'-> No improvement for {epochs_no_improve} epoch(s).')
 
         if epochs_no_improve >= patience:
-            print(f'\nWczesne zatrzymanie w epoce {epoch + 1}!')
+            print(f'\nEarly stopping at epoch {epoch + 1}!')
             break
         print('-' * 30)
 
@@ -131,14 +131,14 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
     return model, history
 
 
-def plot_training_history(history, model_dir):
+def plot_training_history(history, save_dir):
     epochs = range(1, len(history['train_loss']) + 1)
     plt.figure(figsize=(12, 5))
 
     plt.subplot(1, 2, 1)
     plt.plot(epochs, history['train_loss'], label='Training Loss')
     plt.plot(epochs, history['val_loss'], label='Validation Loss')
-    plt.title('Model Loss (ResNet)')
+    plt.title('Model Loss (ViT)')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend()
@@ -147,20 +147,20 @@ def plot_training_history(history, model_dir):
     plt.subplot(1, 2, 2)
     plt.plot(epochs, history['train_acc'], label='Training Accuracy')
     plt.plot(epochs, history['val_acc'], label='Validation Accuracy')
-    plt.title('Model Accuracy (ResNet)')
+    plt.title('Model Accuracy (ViT)')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
     plt.legend()
     plt.grid(True)
 
     plt.tight_layout()
-    chart_path = os.path.join(model_dir, 'ResNet_Acc.png')
+    chart_path = os.path.join(save_dir, 'ViT_Acc.png')
     plt.savefig(chart_path)
     plt.close()
     print(f"-> Saved training history plot as {chart_path}")
 
 
-def evaluate_and_save_model(model, test_loader, device, classes, model_dir):
+def evaluate_and_save_model(model, test_loader, device, classes, save_dir):
     print("\nEvaluating the model on the test set...")
     model.eval()
     all_preds = []
@@ -174,14 +174,14 @@ def evaluate_and_save_model(model, test_loader, device, classes, model_dir):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
+    # Classification report
     report = classification_report(all_labels, all_preds, target_names=classes, zero_division=0)
     print("\n   CLASSIFICATION REPORT     ")
     print(report)
 
-    # Classification report
-    report_path = os.path.join(model_dir, 'ResNet_report.txt')
+    report_path = os.path.join(save_dir, 'ViT_report.txt')
     with open(report_path, 'w', encoding='utf-8') as f:
-        f.write("   Classification Report (ResNet)     \n")
+        f.write("   Classification Report (ViT)    \n")
         f.write(report)
     print(f"-> Saved classification report: {report_path}")
 
@@ -189,23 +189,22 @@ def evaluate_and_save_model(model, test_loader, device, classes, model_dir):
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
-    plt.title('Confusion Matrix')
+    plt.title('Confusion Matrix (ViT)')
     plt.xlabel('Predicted Classification')
     plt.ylabel('Actual Classification')
     plt.tight_layout()
 
-    cm_path = os.path.join(model_dir, 'ResNet_CM.png')
+    cm_path = os.path.join(save_dir, 'ViT_CM.png')
     plt.savefig(cm_path)
     plt.close()
     print(f"-> Saved confusion matrix: {cm_path}")
 
 
 if __name__ == "__main__":
-    #GROUND_TRUTH_PATH = r'ISIC2019\Training\ISIC_2019_Training_GroundTruth.csv'
     METADATA_PATH = r'HAM10000\HAM10000_metadata.csv'
     CLEAN_IMAGE_DIR = r'HAM10000\HAM10000_images_mask'
     #MASK_DIR = r'HAM10000\HAM10000_segmentations_lesion_tschandl'
-    MODEL_DIR = r'Models\ResNet\None'
+    MODEL_DIR = r'Models\ViT\None'
 
     os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -217,7 +216,6 @@ if __name__ == "__main__":
         metadata_path=METADATA_PATH,
         image_dir=CLEAN_IMAGE_DIR,
         #mask_dir=MASK_DIR,
-        batch_size=32,
         img_size=224,
         seg_mode='none',
         use_sampler=True
@@ -226,14 +224,12 @@ if __name__ == "__main__":
     class_weights = class_weights.to(device)
     num_classes = len(classes)
 
-    model = get_resnet_model(num_classes=num_classes).to(device)
+    model = get_vit_model(num_classes=num_classes).to(device)
 
-    # Zbyt brutalne przypisywanie wag do klas
-    #criterion = FocalLoss(alpha=class_weights, gamma=2.0).to(device)
-    #criterion = nn.CrossEntropyLoss(weight=class_weights)
+    #criterion = FocalLoss(alpha=None, gamma=2.0)
     criterion = nn.CrossEntropyLoss()
 
-    optimizer = optim.Adam(
+    optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=0.00001,
         weight_decay=1e-4
@@ -250,11 +246,11 @@ if __name__ == "__main__":
         optimizer=optimizer,
         scheduler=scheduler,
         device=device,
-        num_epochs=1000,
+        num_epochs=100,
         patience=10
     )
 
-    history_path = os.path.join(MODEL_DIR, 'ResNet_report.json')
+    history_path = os.path.join(MODEL_DIR, 'ViT_report.json')
     with open(history_path, 'w', encoding='utf-8') as f:
         json.dump(training_history, f, indent=4)
     print(f"\n-> Saved raw training data to: {history_path}")
@@ -262,6 +258,6 @@ if __name__ == "__main__":
     plot_training_history(training_history, MODEL_DIR)
     evaluate_and_save_model(trained_model, test_loader, device, classes, MODEL_DIR)
 
-    MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'ResNet_model.pth')
+    MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'ViT_model.pth')
     torch.save(trained_model.state_dict(), MODEL_SAVE_PATH)
     print(f"\nBest model saved as: {MODEL_SAVE_PATH}")
