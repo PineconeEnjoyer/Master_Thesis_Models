@@ -19,9 +19,9 @@ The project code is modularized into scripts handling data preparation, image pr
 | **`HairRemoval.py`** | An OpenCV-based script that isolates and removes hair from the skin lesion images using morphological operations (Blackhat), thresholding, and Telea inpainting. |
 | **`Preprocessing.py`** | Handles dataset splitting (stratified group splits to prevent data leakage), data augmentation (flips, affine transformations, color jitter), image cropping around the segmented mask, and calculates class weights for the `WeightedRandomSampler`. |
 | **`CNN.py`** | Implementation of a custom Convolutional Neural Network architecture with batch normalization, max pooling, and dropout layers. |
-| **`ResNet.py`** | A script utilizing a pre-trained ResNet50 model. It freezes the base layers while unfreezing `layer3` and `layer4` for fine-tuning, and implements a custom classifier with dropout. |
-| **`EfficientNet.py`** | Implements a pre-trained EfficientNet-B3 model, unfreezing the last two blocks for fine-tuning, and utilizes Mixed Precision to optimize memory and speed. |
-| **`Thesis_Document`** | The official project declaration detailing the scope, goals, and academic requirements of the Master's Thesis. |
+| **`ResNet.py`** | A script utilizing a pre-trained ResNet50 model. |
+| **`EfficientNet.py`** | A script utilizing a pre-trained EfficientNet-B3 model. |
+| **`VisionTransformer.py`** | A script utilizing a pre-trained VIT-B/16 model. |
 
 ---
 
